@@ -1,21 +1,27 @@
-//! AetherStream Protocol Layer
-//! Drop-in wire protocol encoder and decoder for Apache Kafka compatibility.
+//! # AetherStream Protocol Layer
+//!
+//! High-performance, zero-JVM implementation of the Apache Kafka binary wire protocol.
+//!
+//! ## Core Architecture:
+//! - **Framing**: `KafkaCodec` implementing 4-byte big-endian framing via `tokio_util::codec::{Decoder, Encoder}`.
+//! - **Headers**: Strongly-typed `RequestHeader` (v0-v2) and `ResponseHeader` (v0-v1).
+//! - **Primitives**: Zero-copy encoders and decoders for Kafka scalar types, varints, strings, bytes, and tagged fields.
+//! - **Message APIs**:
+//!   - `ApiVersions` (v0-v3)
+//!   - `Metadata` (v0-v7)
 
 #![warn(missing_docs)]
 
-/// Protocol version definitions and constants.
-pub mod version {
-    /// Supported Kafka API keys
-    #[repr(i16)]
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum ApiKey {
-        /// Produce API
-        Produce = 0,
-        /// Fetch API
-        Fetch = 1,
-        /// Metadata API
-        Metadata = 3,
-        /// ApiVersions API
-        ApiVersions = 18,
-    }
-}
+pub mod error;
+pub mod frame;
+pub mod header;
+pub mod messages;
+pub mod primitives;
+
+pub use error::ProtocolError;
+pub use frame::{InboundRequest, KafkaCodec, DEFAULT_MAX_FRAME_BYTES};
+pub use header::{ApiKey, ErrorCode, RequestHeader, ResponseHeader};
+pub use messages::{
+    ApiVersionSupport, ApiVersionsRequest, ApiVersionsResponse, BrokerMetadata, MetadataRequest,
+    MetadataResponse, PartitionMetadata, TopicMetadata,
+};
