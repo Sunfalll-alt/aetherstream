@@ -23,6 +23,7 @@ memmap2 = "0.9"
 # Asynchronous runtime & networking
 tokio = { version = "1.53", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec", "io"] }
+futures-util = { version = "0.3", features = ["sink"] }
 
 # Error handling
 thiserror = "2.0"

@@ -9,6 +9,8 @@
 //! - **Message APIs**:
 //!   - `ApiVersions` (v0-v3)
 //!   - `Metadata` (v0-v7)
+//!   - `Produce` (v3-v8)
+//!   - `Fetch` (v4-v11)
 
 #![warn(missing_docs)]
 
@@ -22,6 +24,9 @@ pub use error::ProtocolError;
 pub use frame::{InboundRequest, KafkaCodec, DEFAULT_MAX_FRAME_BYTES};
 pub use header::{ApiKey, ErrorCode, RequestHeader, ResponseHeader};
 pub use messages::{
-    ApiVersionSupport, ApiVersionsRequest, ApiVersionsResponse, BrokerMetadata, MetadataRequest,
-    MetadataResponse, PartitionMetadata, TopicMetadata,
+    ApiVersionSupport, ApiVersionsRequest, ApiVersionsResponse, BrokerMetadata,
+    FetchPartitionData, FetchPartitionResponse, FetchRequest, FetchResponse, FetchTopicData,
+    FetchTopicResponse, MetadataRequest, MetadataResponse, PartitionMetadata,
+    PartitionProduceData, PartitionProduceResponse, ProduceRequest, ProduceResponse,
+    TopicMetadata, TopicProduceData, TopicProduceResponse,
 };

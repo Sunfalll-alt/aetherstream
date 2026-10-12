@@ -70,9 +70,10 @@ impl ApiKey {
 
 /// Standard Kafka Error Codes.
 #[repr(i16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ErrorCode {
     /// No error (0).
+    #[default]
     None = 0,
     /// Offset out of range (1).
     OffsetOutOfRange = 1,

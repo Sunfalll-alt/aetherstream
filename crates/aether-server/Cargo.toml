@@ -17,6 +17,7 @@ tracing-subscriber = { workspace = true }
 parking_lot = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
