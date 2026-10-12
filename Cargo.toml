@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/aether-storage",
+    "crates/aether-protocol",
+    "crates/aether-server",
+    "crates/aether-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["AetherStream Contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/aetherstream/aetherstream"
+
+[workspace.dependencies]
+# Storage & Zero-Copy primitives
+bytes = "1.12"
+crc32fast = "1.5"
+memmap2 = "0.9"
+
+# Asynchronous runtime & networking
+tokio = { version = "1.53", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Concurrency primitives
+parking_lot = "0.12"
+
+# Metrics
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# Internal crates
+aether-storage = { path = "crates/aether-storage" }
+aether-protocol = { path = "crates/aether-protocol" }
+aether-server = { path = "crates/aether-server" }
+
+# Testing utilities
+tempfile = "3.17"

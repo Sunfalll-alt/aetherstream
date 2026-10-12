@@ -1,0 +1,17 @@
+[package]
+name = "aether-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+crc32fast = { workspace = true }
+memmap2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
