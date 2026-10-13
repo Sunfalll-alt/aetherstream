@@ -31,7 +31,7 @@ impl Default for IndexConfig {
     fn default() -> Self {
         Self {
             max_index_bytes: 10 * 1024 * 1024, // 10 MiB (~1.31 million entries)
-            index_interval_bytes: 4096,         // 4 KiB
+            index_interval_bytes: 4096,        // 4 KiB
         }
     }
 }
@@ -233,8 +233,8 @@ impl Index {
             let slice = &log_bytes[curr_pos..];
             match Record::decode_from_slice(slice) {
                 Ok((record, consumed)) => {
-                    let should_index = index.entries == 0
-                        || bytes_since_last_index >= config.index_interval_bytes;
+                    let should_index =
+                        index.entries == 0 || bytes_since_last_index >= config.index_interval_bytes;
 
                     if should_index {
                         let rel_offset = (record.offset - base_offset) as u32;
@@ -264,7 +264,11 @@ impl Index {
     /// # Errors
     /// Returns `StorageError::IndexFull` if maximum capacity is reached.
     /// Returns `StorageError::InvalidFormat` if monotonicity is violated.
-    pub fn append(&mut self, relative_offset: u32, physical_position: u32) -> Result<(), StorageError> {
+    pub fn append(
+        &mut self,
+        relative_offset: u32,
+        physical_position: u32,
+    ) -> Result<(), StorageError> {
         if self.entries >= self.max_entries {
             return Err(StorageError::IndexFull {
                 entries: self.entries,

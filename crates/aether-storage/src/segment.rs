@@ -36,7 +36,7 @@ impl Default for SegmentConfig {
             max_segment_bytes: 1024 * 1024 * 1024, // 1 GiB
             sync_on_append: false,                 // Default to OS page cache buffering
             max_index_bytes: 10 * 1024 * 1024,     // 10 MiB
-            index_interval_bytes: 4096,             // 4 KiB
+            index_interval_bytes: 4096,            // 4 KiB
         }
     }
 }
@@ -181,7 +181,10 @@ impl Segment {
 
             let mut record_buf = vec![0u8; total_record_bytes];
             if let Err(e) = file.read_exact_at(&mut record_buf, valid_size) {
-                warn!("Failed reading full record frame at {}: {}; truncating.", valid_size, e);
+                warn!(
+                    "Failed reading full record frame at {}: {}; truncating.",
+                    valid_size, e
+                );
                 break;
             }
 
@@ -374,7 +377,10 @@ impl Segment {
     /// Pre-computes offsets, serializes all records into a single contiguous buffer,
     /// records sparse index entries, and issues a single atomic `write_all_at` disk write
     /// to minimize kernel syscall transitions.
-    pub fn append_batch(&mut self, records: &mut [Record]) -> Result<Vec<AppendResult>, StorageError> {
+    pub fn append_batch(
+        &mut self,
+        records: &mut [Record],
+    ) -> Result<Vec<AppendResult>, StorageError> {
         if records.is_empty() {
             return Ok(Vec::new());
         }
@@ -384,7 +390,9 @@ impl Segment {
             total_batch_bytes += rec.encoded_size();
         }
 
-        if self.current_size > 0 && self.current_size + total_batch_bytes as u64 > self.config.max_segment_bytes {
+        if self.current_size > 0
+            && self.current_size + total_batch_bytes as u64 > self.config.max_segment_bytes
+        {
             return Err(StorageError::SegmentFull {
                 current_bytes: self.current_size,
                 record_bytes: total_batch_bytes,
@@ -444,7 +452,10 @@ impl Segment {
     ///
     /// Returns `Ok(None)` if `physical_offset` is at or beyond the current log end.
     /// Returns `Ok(Some((record, next_physical_position)))` upon success.
-    pub fn read_record_at(&self, physical_offset: u64) -> Result<Option<(Record, u64)>, StorageError> {
+    pub fn read_record_at(
+        &self,
+        physical_offset: u64,
+    ) -> Result<Option<(Record, u64)>, StorageError> {
         if physical_offset >= self.current_size {
             return Ok(None);
         }
@@ -809,8 +820,14 @@ mod tests {
         {
             let mut segment =
                 Segment::create(dir.path(), 0, config.clone()).expect("Create failed");
-            let mut rec1 = Record::new(Some(Bytes::from_static(b"k1")), Some(Bytes::from_static(b"v1")));
-            let mut rec2 = Record::new(Some(Bytes::from_static(b"k2")), Some(Bytes::from_static(b"v2")));
+            let mut rec1 = Record::new(
+                Some(Bytes::from_static(b"k1")),
+                Some(Bytes::from_static(b"v1")),
+            );
+            let mut rec2 = Record::new(
+                Some(Bytes::from_static(b"k2")),
+                Some(Bytes::from_static(b"v2")),
+            );
             segment.append(&mut rec1).unwrap();
             segment.append(&mut rec2).unwrap();
             clean_size = segment.current_size();
@@ -828,12 +845,18 @@ mod tests {
 
         // Re-open: Segment::open must truncate back to clean_size and recover cleanly
         {
-            let mut segment = Segment::open(dir.path(), 0, config.clone()).expect("Open should recover");
+            let mut segment =
+                Segment::open(dir.path(), 0, config.clone()).expect("Open should recover");
             assert_eq!(segment.current_size(), clean_size);
             assert_eq!(segment.next_offset(), 2);
 
-            let mut rec3 = Record::new(Some(Bytes::from_static(b"k3")), Some(Bytes::from_static(b"v3")));
-            let res = segment.append(&mut rec3).expect("Append after recovery failed");
+            let mut rec3 = Record::new(
+                Some(Bytes::from_static(b"k3")),
+                Some(Bytes::from_static(b"v3")),
+            );
+            let res = segment
+                .append(&mut rec3)
+                .expect("Append after recovery failed");
             assert_eq!(res.offset, 2);
             assert_eq!(segment.next_offset(), 3);
         }
@@ -858,7 +881,9 @@ mod tests {
 
         let mut rec2 = Record::new(
             Some(Bytes::from_static(b"k2")),
-            Some(Bytes::from_static(b"v2-large-payload-exceeding-segment-capacity-limit-1234567890")),
+            Some(Bytes::from_static(
+                b"v2-large-payload-exceeding-segment-capacity-limit-1234567890",
+            )),
         );
         let err = segment.append(&mut rec2).unwrap_err();
         match err {

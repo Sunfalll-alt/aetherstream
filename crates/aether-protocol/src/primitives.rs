@@ -150,7 +150,10 @@ pub fn read_bytes(buf: &mut impl Buf) -> Result<Option<Bytes>, ProtocolError> {
         return Ok(None);
     }
     if len < -1 {
-        return Err(ProtocolError::InvalidProtocol(format!("Invalid byte length {}", len)));
+        return Err(ProtocolError::InvalidProtocol(format!(
+            "Invalid byte length {}",
+            len
+        )));
     }
 
     let ulen = len as usize;
@@ -198,7 +201,10 @@ where
         return Ok(None);
     }
     if len < -1 {
-        return Err(ProtocolError::InvalidProtocol(format!("Invalid array count: {}", len)));
+        return Err(ProtocolError::InvalidProtocol(format!(
+            "Invalid array count: {}",
+            len
+        )));
     }
 
     let count = len as usize;
@@ -227,7 +233,10 @@ where
 }
 
 /// Reads a compact Kafka array with a UVARINT length + 1 prefix (0 indicates null).
-pub fn read_compact_array<B, T, F>(buf: &mut B, mut read_item: F) -> Result<Option<Vec<T>>, ProtocolError>
+pub fn read_compact_array<B, T, F>(
+    buf: &mut B,
+    mut read_item: F,
+) -> Result<Option<Vec<T>>, ProtocolError>
 where
     B: Buf,
     F: FnMut(&mut B) -> Result<T, ProtocolError>,
@@ -317,7 +326,10 @@ mod tests {
         let mut cursor = buf.freeze();
         assert_eq!(read_string(&mut cursor).unwrap(), Some("my-topic".into()));
         assert_eq!(read_string(&mut cursor).unwrap(), None);
-        assert_eq!(read_compact_string(&mut cursor).unwrap(), Some("compact-topic".into()));
+        assert_eq!(
+            read_compact_string(&mut cursor).unwrap(),
+            Some("compact-topic".into())
+        );
         assert_eq!(read_compact_string(&mut cursor).unwrap(), None);
         assert_eq!(cursor.remaining(), 0);
     }
@@ -329,7 +341,9 @@ mod tests {
         write_array(&mut buf, Some(&list), |b, &s| write_string(b, Some(s)));
 
         let mut cursor = buf.freeze();
-        let decoded = read_array(&mut cursor, |b| Ok(read_string(b)?.unwrap())).unwrap().unwrap();
+        let decoded = read_array(&mut cursor, |b| Ok(read_string(b)?.unwrap()))
+            .unwrap()
+            .unwrap();
         assert_eq!(decoded, vec!["alpha", "beta", "gamma"]);
     }
 }

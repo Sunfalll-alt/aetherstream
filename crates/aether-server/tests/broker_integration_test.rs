@@ -4,9 +4,8 @@
 //! and verifies ApiVersions, Metadata, Produce, and Fetch end-to-end.
 
 use aether_protocol::{
-    ApiKey, ApiVersionsRequest, ApiVersionsResponse, FetchRequest, FetchResponse,
-    KafkaCodec, MetadataRequest, MetadataResponse, ProduceRequest, ProduceResponse,
-    RequestHeader,
+    ApiKey, ApiVersionsRequest, ApiVersionsResponse, FetchRequest, FetchResponse, KafkaCodec,
+    MetadataRequest, MetadataResponse, ProduceRequest, ProduceResponse, RequestHeader,
 };
 use aether_server::{AetherServer, ServerConfig};
 use aether_storage::{PartitionConfig, Record};
@@ -39,6 +38,8 @@ async fn test_broker_full_produce_fetch_lifecycle() {
             retention_bytes: None,
             retention_ms: None,
         },
+        cluster_bind_addr: None,
+        cluster_peers: Vec::new(),
     };
 
     let server = AetherServer::new(server_config).unwrap();
@@ -80,7 +81,10 @@ async fn test_broker_full_produce_fetch_lifecycle() {
     let _ = resp_cursor.split_to(5);
 
     let api_versions_resp = ApiVersionsResponse::decode(3, &mut resp_cursor).unwrap();
-    assert_eq!(api_versions_resp.error_code, aether_protocol::ErrorCode::None);
+    assert_eq!(
+        api_versions_resp.error_code,
+        aether_protocol::ErrorCode::None
+    );
     assert!(api_versions_resp.api_keys.len() >= 4);
 
     // -------------------------------------------------------------------------
@@ -197,7 +201,10 @@ async fn test_broker_full_produce_fetch_lifecycle() {
     assert_eq!(part_fetch.high_watermark, 2);
 
     // Verify fetched record contents
-    let records_payload = part_fetch.records.as_ref().expect("Records payload expected");
+    let records_payload = part_fetch
+        .records
+        .as_ref()
+        .expect("Records payload expected");
     let mut slice: &[u8] = records_payload;
 
     let (decoded_rec1, consumed1) = Record::decode_from_slice(slice).unwrap();

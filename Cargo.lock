@@ -16,6 +16,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-cluster"
+version = "0.1.0"
+dependencies = [
+ "aether-protocol",
+ "aether-storage",
+ "bytes",
+ "futures-util",
+ "parking_lot",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "aether-protocol"
 version = "0.1.0"
 dependencies = [
@@ -32,6 +48,7 @@ dependencies = [
 name = "aether-server"
 version = "0.1.0"
 dependencies = [
+ "aether-cluster",
  "aether-protocol",
  "aether-storage",
  "bytes",

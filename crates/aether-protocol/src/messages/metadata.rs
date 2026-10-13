@@ -176,12 +176,7 @@ pub struct MetadataResponse {
 
 impl MetadataResponse {
     /// Helper to generate a single-node broker metadata response for a set of topics.
-    pub fn single_broker(
-        node_id: i32,
-        host: &str,
-        port: i32,
-        topics: Vec<TopicMetadata>,
-    ) -> Self {
+    pub fn single_broker(node_id: i32, host: &str, port: i32, topics: Vec<TopicMetadata>) -> Self {
         Self {
             throttle_time_ms: 0,
             brokers: vec![BrokerMetadata::new(node_id, host, port)],
@@ -222,11 +217,7 @@ impl MetadataResponse {
                 });
             }
             let port = b.get_i32();
-            let rack = if version >= 1 {
-                read_string(b)?
-            } else {
-                None
-            };
+            let rack = if version >= 1 { read_string(b)? } else { None };
             Ok(BrokerMetadata {
                 node_id,
                 host,

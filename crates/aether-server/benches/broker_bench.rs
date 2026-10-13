@@ -38,6 +38,8 @@ async fn start_benchmark_broker() -> (SocketAddr, TempDir, oneshot::Sender<()>) 
             retention_bytes: None,
             retention_ms: None,
         },
+        cluster_bind_addr: None,
+        cluster_peers: Vec::new(),
     };
 
     let server = AetherServer::new(server_config).unwrap();
@@ -74,7 +76,10 @@ fn bench_produce_throughput(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(total_batch_bytes as u64));
 
     group.bench_function(
-        BenchmarkId::new("produce_batch_50x1KB", format!("{}KB", total_batch_bytes / 1024)),
+        BenchmarkId::new(
+            "produce_batch_50x1KB",
+            format!("{}KB", total_batch_bytes / 1024),
+        ),
         |b| {
             b.to_async(&rt).iter_custom(|iters| {
                 let batch_payload = batch_payload.clone();
@@ -180,12 +185,8 @@ fn bench_fetch_latency_profiles(c: &mut Criterion) {
                     let start = std::time::Instant::now();
 
                     for corr_id in 2..=(1 + iters as i32) {
-                        let fetch_req = FetchRequest::new(
-                            "bench-fetch-topic",
-                            0,
-                            0,
-                            max_fetch_bytes,
-                        );
+                        let fetch_req =
+                            FetchRequest::new("bench-fetch-topic", 0, 0, max_fetch_bytes);
 
                         let f_header = RequestHeader {
                             api_key: ApiKey::Fetch,

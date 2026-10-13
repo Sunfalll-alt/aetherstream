@@ -20,6 +20,10 @@ pub enum ServerError {
     #[error("Protocol error: {0}")]
     Protocol(#[from] ProtocolError),
 
+    /// Distributed cluster and consensus error.
+    #[error("Cluster error: {0}")]
+    Cluster(#[from] aether_cluster::ClusterError),
+
     /// Requested topic does not exist.
     #[error("Unknown topic: {0}")]
     UnknownTopic(String),

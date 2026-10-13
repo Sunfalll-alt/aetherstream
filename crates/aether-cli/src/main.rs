@@ -12,6 +12,8 @@ struct CliConfig {
     port: i32,
     data_dir: PathBuf,
     node_id: i32,
+    cluster_bind: Option<String>,
+    cluster_peers: Vec<(i32, std::net::SocketAddr, std::net::SocketAddr)>,
 }
 
 impl Default for CliConfig {
@@ -21,6 +23,8 @@ impl Default for CliConfig {
             port: 9092,
             data_dir: PathBuf::from("/tmp/aetherstream"),
             node_id: 1,
+            cluster_bind: None,
+            cluster_peers: Vec::new(),
         }
     }
 }
@@ -51,16 +55,22 @@ fn parse_args() -> Result<CliConfig> {
                     config.node_id = val.parse()?;
                 }
             }
+            "--cluster-bind" => {
+                if let Some(val) = args.next() {
+                    config.cluster_bind = Some(val);
+                }
+            }
             "-h" | "--help" => {
                 println!(
                     "AetherStream Broker v0.1.0\n\n\
                     USAGE:\n    aether [OPTIONS]\n\n\
                     OPTIONS:\n\
-                        --host <HOST>        Bind / advertised host (default: 127.0.0.1)\n\
-                        --port <PORT>        Bind / advertised port (default: 9092)\n\
-                        --data-dir <DIR>     Commit log data directory (default: /tmp/aetherstream)\n\
-                        --node-id <ID>       Broker node ID (default: 1)\n\
-                        -h, --help           Print help information\n"
+                        --host <HOST>            Bind / advertised host (default: 127.0.0.1)\n\
+                        --port <PORT>            Bind / advertised port (default: 9092)\n\
+                        --data-dir <DIR>         Commit log data directory (default: /tmp/aetherstream)\n\
+                        --node-id <ID>           Broker node ID (default: 1)\n\
+                        --cluster-bind <ADDR>    Inter-broker Raft clustering bind address (e.g. 127.0.0.1:9093)\n\
+                        -h, --help               Print help information\n"
                 );
                 std::process::exit(0);
             }
@@ -96,6 +106,8 @@ async fn main() -> Result<()> {
         advertised_host: cli_config.host,
         advertised_port: cli_config.port,
         partition_config: PartitionConfig::default(),
+        cluster_bind_addr: cli_config.cluster_bind,
+        cluster_peers: cli_config.cluster_peers,
     };
 
     let server = AetherServer::new(server_config)?;

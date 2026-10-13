@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 aether-storage = { workspace = true }
 aether-protocol = { workspace = true }
+aether-cluster = { workspace = true }
 bytes = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

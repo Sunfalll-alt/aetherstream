@@ -1,12 +1,14 @@
 //! Request router and API dispatch handlers.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use aether_cluster::ClusterError;
 use aether_protocol::{
-    ApiKey, ApiVersionsResponse, BrokerMetadata, ErrorCode, FetchPartitionResponse,
-    FetchRequest, FetchResponse, FetchTopicResponse, InboundRequest, MetadataRequest,
-    MetadataResponse, PartitionMetadata, PartitionProduceResponse, ProduceRequest,
-    ProduceResponse, ResponseHeader, TopicMetadata, TopicProduceResponse,
+    ApiKey, ApiVersionsResponse, BrokerMetadata, ErrorCode, FetchPartitionResponse, FetchRequest,
+    FetchResponse, FetchTopicResponse, InboundRequest, MetadataRequest, MetadataResponse,
+    PartitionMetadata, PartitionProduceResponse, ProduceRequest, ProduceResponse, ResponseHeader,
+    TopicMetadata, TopicProduceResponse,
 };
 use aether_storage::Record;
 use bytes::{Bytes, BytesMut};
@@ -26,7 +28,7 @@ pub async fn handle_request(
     match req.header.api_key {
         ApiKey::ApiVersions => handle_api_versions(&req),
         ApiKey::Metadata => handle_metadata(&state, &mut req),
-        ApiKey::Produce => handle_produce(&state, &mut req),
+        ApiKey::Produce => handle_produce(&state, &mut req).await,
         ApiKey::Fetch => handle_fetch(&state, &mut req),
         unsupported => {
             warn!("Received unsupported API request: {:?}", unsupported);
@@ -66,10 +68,7 @@ fn handle_api_versions(req: &InboundRequest) -> Result<Bytes, ServerError> {
 }
 
 /// Handles `Metadata` requests (v0 - v7).
-fn handle_metadata(
-    state: &BrokerState,
-    req: &mut InboundRequest,
-) -> Result<Bytes, ServerError> {
+fn handle_metadata(state: &BrokerState, req: &mut InboundRequest) -> Result<Bytes, ServerError> {
     let metadata_req = MetadataRequest::decode(req.header.api_version, &mut req.body)?;
 
     debug!(
@@ -79,13 +78,19 @@ fn handle_metadata(
 
     let mut topic_metadata_list = Vec::new();
 
+    let cluster_opt = state.cluster();
+
     match metadata_req.topics {
         None => {
             // Requesting ALL topics in the cluster
             for (topic_name, partition_indices) in state.list_topics() {
                 let mut parts = Vec::new();
                 for part_id in partition_indices {
-                    parts.push(PartitionMetadata::leader(part_id as i32, state.node_id));
+                    if let Some(ref cluster) = cluster_opt {
+                        parts.push(cluster.partition_metadata(&topic_name, part_id));
+                    } else {
+                        parts.push(PartitionMetadata::leader(part_id as i32, state.node_id));
+                    }
                 }
                 topic_metadata_list.push(TopicMetadata::success(topic_name, parts));
             }
@@ -95,7 +100,11 @@ fn handle_metadata(
             for (topic_name, partition_indices) in state.list_topics() {
                 let mut parts = Vec::new();
                 for part_id in partition_indices {
-                    parts.push(PartitionMetadata::leader(part_id as i32, state.node_id));
+                    if let Some(ref cluster) = cluster_opt {
+                        parts.push(cluster.partition_metadata(&topic_name, part_id));
+                    } else {
+                        parts.push(PartitionMetadata::leader(part_id as i32, state.node_id));
+                    }
                 }
                 topic_metadata_list.push(TopicMetadata::success(topic_name, parts));
             }
@@ -108,7 +117,14 @@ fn handle_metadata(
                     for (t, p) in state.list_topics() {
                         if t == topic_name {
                             for part_id in p {
-                                parts.push(PartitionMetadata::leader(part_id as i32, state.node_id));
+                                if let Some(ref cluster) = cluster_opt {
+                                    parts.push(cluster.partition_metadata(&topic_name, part_id));
+                                } else {
+                                    parts.push(PartitionMetadata::leader(
+                                        part_id as i32,
+                                        state.node_id,
+                                    ));
+                                }
                             }
                         }
                     }
@@ -116,7 +132,11 @@ fn handle_metadata(
                 } else if metadata_req.allow_auto_topic_creation {
                     // Dynamically create partition 0 for the requested topic
                     state.get_or_create_partition(&topic_name, 0)?;
-                    let parts = vec![PartitionMetadata::leader(0, state.node_id)];
+                    let parts = if let Some(ref cluster) = cluster_opt {
+                        vec![cluster.partition_metadata(&topic_name, 0)]
+                    } else {
+                        vec![PartitionMetadata::leader(0, state.node_id)]
+                    };
                     topic_metadata_list.push(TopicMetadata::success(topic_name, parts));
                 } else {
                     topic_metadata_list.push(TopicMetadata {
@@ -130,12 +150,28 @@ fn handle_metadata(
         }
     }
 
-    let broker = BrokerMetadata::new(state.node_id, &state.host, state.port);
+    let brokers = if let Some(ref cluster) = cluster_opt {
+        let b = cluster.brokers_metadata();
+        if b.is_empty() {
+            vec![BrokerMetadata::new(state.node_id, &state.host, state.port)]
+        } else {
+            b
+        }
+    } else {
+        vec![BrokerMetadata::new(state.node_id, &state.host, state.port)]
+    };
+
+    let controller_id = if let Some(ref cluster) = cluster_opt {
+        cluster.leader_id().unwrap_or(state.node_id)
+    } else {
+        state.node_id
+    };
+
     let resp = MetadataResponse {
         throttle_time_ms: 0,
-        brokers: vec![broker],
+        brokers,
         cluster_id: Some("aether-cluster-local".to_string()),
-        controller_id: state.node_id,
+        controller_id,
         topics: topic_metadata_list,
     };
 
@@ -147,7 +183,7 @@ fn handle_metadata(
 }
 
 /// Handles `Produce` requests (v3 - v8).
-fn handle_produce(
+async fn handle_produce(
     state: &BrokerState,
     req: &mut InboundRequest,
 ) -> Result<Bytes, ServerError> {
@@ -161,6 +197,7 @@ fn handle_produce(
     );
 
     let mut topic_responses = Vec::with_capacity(produce_req.topic_data.len());
+    let cluster_opt = state.cluster();
 
     for topic_data in produce_req.topic_data {
         let mut partition_responses = Vec::with_capacity(topic_data.partition_data.len());
@@ -168,37 +205,102 @@ fn handle_produce(
         for part_data in topic_data.partition_data {
             let part_id = part_data.partition_index;
 
-            let part_res = match state.get_or_create_partition(&topic_data.name, part_id as u32) {
-                Ok(part_arc) => {
-                    if let Some(records_payload) = part_data.records {
-                        let mut records = extract_records(records_payload);
-                        let mut part_log = part_arc.write();
-
-                        match part_log.append_batch(&mut records) {
-                            Ok(results) => {
-                                let base_offset = results
-                                    .first()
-                                    .map(|r| r.offset)
-                                    .unwrap_or_else(|| part_log.log_end_offset());
-                                let start_offset = part_log.log_start_offset();
-                                PartitionProduceResponse::success(part_id, base_offset, start_offset)
-                            }
-                            Err(err) => {
-                                warn!("Append error on {}-{}: {}", topic_data.name, part_id, err);
-                                PartitionProduceResponse::error(part_id, ErrorCode::CorruptMessage)
-                            }
-                        }
+            let part_res = if let Some(ref cluster) = cluster_opt {
+                if !cluster.is_leader() {
+                    PartitionProduceResponse::error(part_id, ErrorCode::NotLeaderOrFollower)
+                } else if let Some(records_payload) = part_data.records {
+                    let mut records = extract_records(records_payload);
+                    let timeout = if produce_req.timeout_ms > 0 {
+                        Duration::from_millis(produce_req.timeout_ms as u64)
                     } else {
-                        // Empty records payload
-                        let part_log = part_arc.read();
-                        let next_offset = part_log.log_end_offset();
-                        let start_offset = part_log.log_start_offset();
-                        PartitionProduceResponse::success(part_id, next_offset, start_offset)
+                        Duration::from_millis(1500)
+                    };
+
+                    match cluster
+                        .replicate_produce(
+                            &topic_data.name,
+                            part_id as u32,
+                            &mut records,
+                            produce_req.acks,
+                            timeout,
+                        )
+                        .await
+                    {
+                        Ok(new_leo) => {
+                            let base_offset = records
+                                .first()
+                                .map(|r| r.offset)
+                                .unwrap_or_else(|| new_leo.saturating_sub(1));
+                            let start_offset = 0;
+                            PartitionProduceResponse::success(part_id, base_offset, start_offset)
+                        }
+                        Err(ClusterError::NotLeader { .. }) => {
+                            PartitionProduceResponse::error(part_id, ErrorCode::NotLeaderOrFollower)
+                        }
+                        Err(ClusterError::QuorumTimeout { .. }) => {
+                            PartitionProduceResponse::error(part_id, ErrorCode::RequestTimedOut)
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Replication error on {}-{}: {}",
+                                topic_data.name, part_id, err
+                            );
+                            PartitionProduceResponse::error(part_id, ErrorCode::CorruptMessage)
+                        }
                     }
+                } else {
+                    let next_offset = state
+                        .get_or_create_partition(&topic_data.name, part_id as u32)
+                        .map(|p| p.read().log_end_offset())
+                        .unwrap_or(0);
+                    PartitionProduceResponse::success(part_id, next_offset, 0)
                 }
-                Err(e) => {
-                    warn!("Failed opening partition {}-{}: {}", topic_data.name, part_id, e);
-                    PartitionProduceResponse::error(part_id, ErrorCode::LeaderNotAvailable)
+            } else {
+                match state.get_or_create_partition(&topic_data.name, part_id as u32) {
+                    Ok(part_arc) => {
+                        if let Some(records_payload) = part_data.records {
+                            let mut records = extract_records(records_payload);
+                            let mut part_log = part_arc.write();
+
+                            match part_log.append_batch(&mut records) {
+                                Ok(results) => {
+                                    let base_offset = results
+                                        .first()
+                                        .map(|r| r.offset)
+                                        .unwrap_or_else(|| part_log.log_end_offset());
+                                    let start_offset = part_log.log_start_offset();
+                                    PartitionProduceResponse::success(
+                                        part_id,
+                                        base_offset,
+                                        start_offset,
+                                    )
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        "Append error on {}-{}: {}",
+                                        topic_data.name, part_id, err
+                                    );
+                                    PartitionProduceResponse::error(
+                                        part_id,
+                                        ErrorCode::CorruptMessage,
+                                    )
+                                }
+                            }
+                        } else {
+                            // Empty records payload
+                            let part_log = part_arc.read();
+                            let next_offset = part_log.log_end_offset();
+                            let start_offset = part_log.log_start_offset();
+                            PartitionProduceResponse::success(part_id, next_offset, start_offset)
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed opening partition {}-{}: {}",
+                            topic_data.name, part_id, e
+                        );
+                        PartitionProduceResponse::error(part_id, ErrorCode::LeaderNotAvailable)
+                    }
                 }
             };
 
@@ -229,10 +331,7 @@ fn handle_produce(
 }
 
 /// Handles `Fetch` requests (v4 - v11).
-fn handle_fetch(
-    state: &BrokerState,
-    req: &mut InboundRequest,
-) -> Result<Bytes, ServerError> {
+fn handle_fetch(state: &BrokerState, req: &mut InboundRequest) -> Result<Bytes, ServerError> {
     let fetch_req = FetchRequest::decode(req.header.api_version, &mut req.body)?;
 
     debug!(
@@ -242,6 +341,7 @@ fn handle_fetch(
     );
 
     let mut topic_responses = Vec::with_capacity(fetch_req.topics.len());
+    let cluster_opt = state.cluster();
 
     for topic_target in fetch_req.topics {
         let mut partition_responses = Vec::with_capacity(topic_target.partitions.len());
@@ -249,42 +349,26 @@ fn handle_fetch(
         for part_target in topic_target.partitions {
             let part_id = part_target.partition_index;
 
-            let part_res = match state.get_partition(&topic_target.name, part_id as u32) {
-                Some(part_arc) => {
-                    let part_log = part_arc.read();
-                    let high_watermark = part_log.log_end_offset();
-                    let log_start_offset = part_log.log_start_offset();
-                    let fetch_offset = part_target.fetch_offset as u64;
-
-                    if fetch_offset < log_start_offset {
-                        PartitionFetchResponse_error(part_id, ErrorCode::OffsetOutOfRange, high_watermark, log_start_offset)
-                    } else if fetch_offset >= high_watermark {
-                        // Beyond tail: return empty records
-                        FetchPartitionResponse::success(part_id, high_watermark, log_start_offset, None)
-                    } else {
-                        match part_log.read_raw_records_from(fetch_offset, part_target.partition_max_bytes as usize) {
-                            Ok((raw_bytes, _next_offset)) => {
-                                if raw_bytes.is_empty() {
-                                    FetchPartitionResponse::success(part_id, high_watermark, log_start_offset, None)
-                                } else {
-                                    FetchPartitionResponse::success(
-                                        part_id,
-                                        high_watermark,
-                                        log_start_offset,
-                                        Some(raw_bytes),
-                                    )
-                                }
-                            }
-                            Err(e) => {
-                                warn!("Error reading from {}-{}: {}", topic_target.name, part_id, e);
-                                PartitionFetchResponse_error(part_id, ErrorCode::CorruptMessage, high_watermark, log_start_offset)
-                            }
-                        }
-                    }
+            let part_res = if let Some(ref cluster) = cluster_opt {
+                if !cluster.is_leader() {
+                    PartitionFetchResponse_error(part_id, ErrorCode::NotLeaderOrFollower, 0, 0)
+                } else {
+                    fetch_partition_from_storage(
+                        state,
+                        &topic_target.name,
+                        part_id,
+                        part_target.fetch_offset as u64,
+                        part_target.partition_max_bytes as usize,
+                    )
                 }
-                None => {
-                    PartitionFetchResponse_error(part_id, ErrorCode::UnknownTopicOrPartition, 0, 0)
-                }
+            } else {
+                fetch_partition_from_storage(
+                    state,
+                    &topic_target.name,
+                    part_id,
+                    part_target.fetch_offset as u64,
+                    part_target.partition_max_bytes as usize,
+                )
             };
 
             partition_responses.push(part_res);
@@ -324,6 +408,64 @@ fn PartitionFetchResponse_error(
         last_stable_offset: high_watermark as i64,
         log_start_offset: log_start_offset as i64,
         records: None,
+    }
+}
+
+fn fetch_partition_from_storage(
+    state: &BrokerState,
+    topic: &str,
+    part_id: i32,
+    fetch_offset: u64,
+    max_bytes: usize,
+) -> FetchPartitionResponse {
+    match state.get_partition(topic, part_id as u32) {
+        Some(part_arc) => {
+            let part_log = part_arc.read();
+            let high_watermark = part_log.log_end_offset();
+            let log_start_offset = part_log.log_start_offset();
+
+            if fetch_offset < log_start_offset {
+                PartitionFetchResponse_error(
+                    part_id,
+                    ErrorCode::OffsetOutOfRange,
+                    high_watermark,
+                    log_start_offset,
+                )
+            } else if fetch_offset >= high_watermark {
+                // Beyond tail: return empty records
+                FetchPartitionResponse::success(part_id, high_watermark, log_start_offset, None)
+            } else {
+                match part_log.read_raw_records_from(fetch_offset, max_bytes) {
+                    Ok((raw_bytes, _next_offset)) => {
+                        if raw_bytes.is_empty() {
+                            FetchPartitionResponse::success(
+                                part_id,
+                                high_watermark,
+                                log_start_offset,
+                                None,
+                            )
+                        } else {
+                            FetchPartitionResponse::success(
+                                part_id,
+                                high_watermark,
+                                log_start_offset,
+                                Some(raw_bytes),
+                            )
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Error reading from {}-{}: {}", topic, part_id, e);
+                        PartitionFetchResponse_error(
+                            part_id,
+                            ErrorCode::CorruptMessage,
+                            high_watermark,
+                            log_start_offset,
+                        )
+                    }
+                }
+            }
+        }
+        None => PartitionFetchResponse_error(part_id, ErrorCode::UnknownTopicOrPartition, 0, 0),
     }
 }
 

@@ -36,8 +36,8 @@ impl Default for PartitionConfig {
         Self {
             max_segment_bytes: 1024 * 1024 * 1024, // 1 GiB
             sync_on_append: false,
-            max_index_bytes: 10 * 1024 * 1024,     // 10 MiB
-            index_interval_bytes: 4096,             // 4 KiB
+            max_index_bytes: 10 * 1024 * 1024, // 10 MiB
+            index_interval_bytes: 4096,        // 4 KiB
             retention_bytes: None,
             retention_ms: None,
         }
@@ -179,7 +179,10 @@ impl PartitionLog {
     }
 
     /// Appends a batch of records in vectorized writes, automatically rolling segments as needed.
-    pub fn append_batch(&mut self, records: &mut [Record]) -> Result<Vec<AppendResult>, StorageError> {
+    pub fn append_batch(
+        &mut self,
+        records: &mut [Record],
+    ) -> Result<Vec<AppendResult>, StorageError> {
         if records.is_empty() {
             return Ok(Vec::new());
         }
@@ -188,7 +191,11 @@ impl PartitionLog {
         let mut start_idx = 0;
 
         while start_idx < records.len() {
-            let active_size = self.segments.get(&self.active_base_offset).unwrap().current_size();
+            let active_size = self
+                .segments
+                .get(&self.active_base_offset)
+                .unwrap()
+                .current_size();
             let available_space = self.config.max_segment_bytes.saturating_sub(active_size);
 
             let mut chunk_bytes = 0usize;
@@ -203,7 +210,8 @@ impl PartitionLog {
                 end_idx += 1;
             }
 
-            if active_size > 0 && (active_size + chunk_bytes as u64 > self.config.max_segment_bytes) {
+            if active_size > 0 && (active_size + chunk_bytes as u64 > self.config.max_segment_bytes)
+            {
                 self.roll()?;
             }
 
@@ -408,12 +416,16 @@ impl PartitionLog {
             let mut valid_end = 0;
             let mut last_rec_offset = curr_offset;
             while valid_end + 4 <= raw_slice.len() {
-                let frame_len = u32::from_be_bytes(raw_slice[valid_end..valid_end + 4].try_into().unwrap()) as usize;
+                let frame_len =
+                    u32::from_be_bytes(raw_slice[valid_end..valid_end + 4].try_into().unwrap())
+                        as usize;
                 let total_rec_len = 4 + frame_len;
                 if valid_end + total_rec_len <= raw_slice.len() {
                     if valid_end + 18 <= raw_slice.len() {
                         let rec_off = u64::from_be_bytes(
-                            raw_slice[valid_end + 10..valid_end + 18].try_into().unwrap(),
+                            raw_slice[valid_end + 10..valid_end + 18]
+                                .try_into()
+                                .unwrap(),
                         );
                         last_rec_offset = rec_off + 1;
                     }
@@ -737,7 +749,10 @@ mod tests {
         for (idx, rec) in batch.iter().enumerate() {
             let expected_offset = 5 + idx as u64;
             assert_eq!(rec.offset, expected_offset);
-            assert_eq!(rec.key, Some(Bytes::from(format!("key-{}", expected_offset))));
+            assert_eq!(
+                rec.key,
+                Some(Bytes::from(format!("key-{}", expected_offset)))
+            );
         }
 
         // Small byte limit fetch (e.g. 150 bytes -> ~2-3 records)
@@ -930,8 +945,14 @@ mod tests {
         assert_eq!(decoded_records.len(), 15);
         for (i, rec) in decoded_records.iter().enumerate() {
             assert_eq!(rec.offset, i as u64);
-            assert_eq!(rec.key.as_ref().unwrap(), &Bytes::from(format!("key-{}", i)));
-            assert_eq!(rec.value.as_ref().unwrap(), &Bytes::from(format!("val-{}", i)));
+            assert_eq!(
+                rec.key.as_ref().unwrap(),
+                &Bytes::from(format!("key-{}", i))
+            );
+            assert_eq!(
+                rec.value.as_ref().unwrap(),
+                &Bytes::from(format!("val-{}", i))
+            );
         }
 
         // Test boundary-aligned partial budget

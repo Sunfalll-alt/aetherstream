@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/aether-storage",
     "crates/aether-protocol",
+    "crates/aether-cluster",
     "crates/aether-server",
     "crates/aether-cli",
 ]
@@ -43,6 +44,7 @@ metrics-exporter-prometheus = "0.16"
 # Internal crates
 aether-storage = { path = "crates/aether-storage" }
 aether-protocol = { path = "crates/aether-protocol" }
+aether-cluster = { path = "crates/aether-cluster" }
 aether-server = { path = "crates/aether-server" }
 
 # Testing & Benchmarking utilities

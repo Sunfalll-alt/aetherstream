@@ -14,7 +14,6 @@ use crate::error::ServerError;
 pub type PartitionMap = HashMap<(String, u32), Arc<RwLock<PartitionLog>>>;
 
 /// In-memory state of the broker managing active topics and partitions.
-#[derive(Debug)]
 pub struct BrokerState {
     /// Unique cluster node identifier.
     pub node_id: i32,
@@ -28,6 +27,22 @@ pub struct BrokerState {
     pub partition_config: PartitionConfig,
     /// Active partition log instances indexed by `(topic, partition_id)`.
     partitions: RwLock<PartitionMap>,
+    /// Optional distributed clustering engine managing consensus & replication.
+    cluster: RwLock<Option<Arc<aether_cluster::ClusterEngine>>>,
+}
+
+impl std::fmt::Debug for BrokerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrokerState")
+            .field("node_id", &self.node_id)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("data_dir", &self.data_dir)
+            .field("partition_config", &self.partition_config)
+            .field("partitions_count", &self.partitions.read().len())
+            .field("cluster_active", &self.cluster.read().is_some())
+            .finish()
+    }
 }
 
 impl BrokerState {
@@ -54,8 +69,16 @@ impl BrokerState {
                         if let Some(last_dash) = dir_name.rfind('-') {
                             let topic = &dir_name[..last_dash];
                             if let Ok(partition_id) = dir_name[last_dash + 1..].parse::<u32>() {
-                                debug!("Discovered existing partition {}-{} on disk", topic, partition_id);
-                                match PartitionLog::open(&path, topic, partition_id, partition_config.clone()) {
+                                debug!(
+                                    "Discovered existing partition {}-{} on disk",
+                                    topic, partition_id
+                                );
+                                match PartitionLog::open(
+                                    &path,
+                                    topic,
+                                    partition_id,
+                                    partition_config.clone(),
+                                ) {
                                     Ok(part_log) => {
                                         partitions_map.insert(
                                             (topic.to_string(), partition_id),
@@ -92,6 +115,7 @@ impl BrokerState {
             data_dir,
             partition_config,
             partitions: RwLock::new(partitions_map),
+            cluster: RwLock::new(None),
         })
     }
 
@@ -168,5 +192,58 @@ impl BrokerState {
     pub fn topic_exists(&self, topic: &str) -> bool {
         let map = self.partitions.read();
         map.keys().any(|(t, _)| t == topic)
+    }
+
+    /// Associates a distributed clustering consensus engine with this broker state.
+    pub fn set_cluster(&self, cluster: Arc<aether_cluster::ClusterEngine>) {
+        *self.cluster.write() = Some(cluster);
+    }
+
+    /// Returns a reference to the active cluster engine, if enabled.
+    pub fn cluster(&self) -> Option<Arc<aether_cluster::ClusterEngine>> {
+        self.cluster.read().clone()
+    }
+}
+
+impl aether_cluster::PartitionProvider for BrokerState {
+    fn append_records(
+        &self,
+        topic: &str,
+        partition_id: u32,
+        records: &mut [aether_storage::Record],
+    ) -> Result<u64, aether_cluster::ClusterError> {
+        let part = self
+            .get_or_create_partition(topic, partition_id)
+            .map_err(|e| aether_cluster::ClusterError::General(e.to_string()))?;
+        let mut part = part.write();
+        let _ = part
+            .append_batch(records)
+            .map_err(aether_cluster::ClusterError::Storage)?;
+        Ok(part.log_end_offset())
+    }
+
+    fn get_leo(&self, topic: &str, partition_id: u32) -> Result<u64, aether_cluster::ClusterError> {
+        let part = self
+            .get_or_create_partition(topic, partition_id)
+            .map_err(|e| aether_cluster::ClusterError::General(e.to_string()))?;
+        let part = part.read();
+        Ok(part.log_end_offset())
+    }
+
+    fn read_records(
+        &self,
+        topic: &str,
+        partition_id: u32,
+        start_offset: u64,
+        max_bytes: usize,
+    ) -> Result<Vec<aether_storage::Record>, aether_cluster::ClusterError> {
+        let part = self
+            .get_or_create_partition(topic, partition_id)
+            .map_err(|e| aether_cluster::ClusterError::General(e.to_string()))?;
+        let part = part.read();
+        let records = part
+            .read_records_from(start_offset, max_bytes)
+            .map_err(aether_cluster::ClusterError::Storage)?;
+        Ok(records)
     }
 }

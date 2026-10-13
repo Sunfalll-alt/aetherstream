@@ -264,7 +264,9 @@ impl Record {
         let value = if value_len >= 0 {
             let vlen = value_len as usize;
             if cursor.remaining() < vlen {
-                return Err(StorageError::InvalidFormat("Truncated value payload".into()));
+                return Err(StorageError::InvalidFormat(
+                    "Truncated value payload".into(),
+                ));
             }
             Some(cursor.copy_to_bytes(vlen))
         } else {
@@ -280,18 +282,23 @@ impl Record {
 
         for _ in 0..headers_count {
             if cursor.remaining() < 4 {
-                return Err(StorageError::InvalidFormat("Truncated header key length".into()));
+                return Err(StorageError::InvalidFormat(
+                    "Truncated header key length".into(),
+                ));
             }
             let hkey_len = cursor.get_u32() as usize;
             if cursor.remaining() < hkey_len {
                 return Err(StorageError::InvalidFormat("Truncated header key".into()));
             }
             let hkey_bytes = cursor.copy_to_bytes(hkey_len);
-            let hkey = String::from_utf8(hkey_bytes.to_vec())
-                .map_err(|e| StorageError::InvalidFormat(format!("Invalid UTF-8 header key: {}", e)))?;
+            let hkey = String::from_utf8(hkey_bytes.to_vec()).map_err(|e| {
+                StorageError::InvalidFormat(format!("Invalid UTF-8 header key: {}", e))
+            })?;
 
             if cursor.remaining() < 4 {
-                return Err(StorageError::InvalidFormat("Truncated header value length".into()));
+                return Err(StorageError::InvalidFormat(
+                    "Truncated header value length".into(),
+                ));
             }
             let hval_len = cursor.get_i32();
             let hval = if hval_len >= 0 {
@@ -340,7 +347,8 @@ mod tests {
         let encoded = record.encode();
         assert_eq!(encoded.len(), record.encoded_size());
 
-        let (decoded, consumed) = Record::decode_from_slice(&encoded).expect("Decode should succeed");
+        let (decoded, consumed) =
+            Record::decode_from_slice(&encoded).expect("Decode should succeed");
         assert_eq!(consumed, encoded.len());
         assert_eq!(decoded.offset, 1005);
         assert_eq!(decoded.timestamp, 1728000000000);
@@ -365,7 +373,8 @@ mod tests {
             .with_headers(headers.clone());
 
         let encoded = record.encode();
-        let (decoded, consumed) = Record::decode_from_slice(&encoded).expect("Decode should succeed");
+        let (decoded, consumed) =
+            Record::decode_from_slice(&encoded).expect("Decode should succeed");
         assert_eq!(consumed, encoded.len());
         assert_eq!(decoded.offset, 0);
         assert_eq!(decoded.key, None);
@@ -390,7 +399,10 @@ mod tests {
 
         let result = Record::decode_from_slice(&encoded);
         match result {
-            Err(StorageError::CrcMismatch { expected, calculated }) => {
+            Err(StorageError::CrcMismatch {
+                expected,
+                calculated,
+            }) => {
                 assert_ne!(expected, calculated);
             }
             other => panic!("Expected CrcMismatch, got {:?}", other),
@@ -399,14 +411,20 @@ mod tests {
 
     #[test]
     fn test_record_incomplete_frame() {
-        let record = Record::new(Some(Bytes::from_static(b"k")), Some(Bytes::from_static(b"v")));
+        let record = Record::new(
+            Some(Bytes::from_static(b"k")),
+            Some(Bytes::from_static(b"v")),
+        );
         let encoded = record.encode();
 
         // Truncate encoded bytes
         let truncated = &encoded[0..encoded.len() - 5];
         let result = Record::decode_from_slice(truncated);
         match result {
-            Err(StorageError::IncompleteRecord { expected, available }) => {
+            Err(StorageError::IncompleteRecord {
+                expected,
+                available,
+            }) => {
                 assert_eq!(expected, encoded.len());
                 assert_eq!(available, truncated.len());
             }

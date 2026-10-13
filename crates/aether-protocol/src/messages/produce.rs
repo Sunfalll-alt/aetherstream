@@ -4,7 +4,9 @@ use bytes::{Buf, BufMut, Bytes};
 
 use crate::error::ProtocolError;
 use crate::header::ErrorCode;
-use crate::primitives::{read_array, read_bytes, read_string, write_array, write_bytes, write_string};
+use crate::primitives::{
+    read_array, read_bytes, read_string, write_array, write_bytes, write_string,
+};
 
 /// Data for a single partition within a ProduceRequest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,12 +41,7 @@ pub struct ProduceRequest {
 
 impl ProduceRequest {
     /// Creates a single-topic produce request.
-    pub fn new(
-        topic: impl Into<String>,
-        partition_index: i32,
-        records: Bytes,
-        acks: i16,
-    ) -> Self {
+    pub fn new(topic: impl Into<String>, partition_index: i32, records: Bytes, acks: i16) -> Self {
         Self {
             transactional_id: None,
             acks,
@@ -322,7 +319,8 @@ mod tests {
             req.encode(v, &mut buf);
 
             let mut cursor = buf.freeze();
-            let decoded = ProduceRequest::decode(v, &mut cursor).expect("Decode produce request failed");
+            let decoded =
+                ProduceRequest::decode(v, &mut cursor).expect("Decode produce request failed");
             assert_eq!(decoded.acks, 1);
             assert_eq!(decoded.topic_data.len(), 1);
             assert_eq!(decoded.topic_data[0].name, "metrics");
@@ -343,13 +341,11 @@ mod tests {
             resp.encode(v, &mut buf);
 
             let mut cursor = buf.freeze();
-            let decoded = ProduceResponse::decode(v, &mut cursor).expect("Decode produce response failed");
+            let decoded =
+                ProduceResponse::decode(v, &mut cursor).expect("Decode produce response failed");
             assert_eq!(decoded.responses.len(), 1);
             assert_eq!(decoded.responses[0].name, "metrics");
-            assert_eq!(
-                decoded.responses[0].partition_responses[0].base_offset,
-                105
-            );
+            assert_eq!(decoded.responses[0].partition_responses[0].base_offset, 105);
             assert_eq!(
                 decoded.responses[0].partition_responses[0].error_code,
                 ErrorCode::None

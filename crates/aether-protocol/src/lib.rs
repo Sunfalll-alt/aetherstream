@@ -24,9 +24,9 @@ pub use error::ProtocolError;
 pub use frame::{InboundRequest, KafkaCodec, DEFAULT_MAX_FRAME_BYTES};
 pub use header::{ApiKey, ErrorCode, RequestHeader, ResponseHeader};
 pub use messages::{
-    ApiVersionSupport, ApiVersionsRequest, ApiVersionsResponse, BrokerMetadata,
-    FetchPartitionData, FetchPartitionResponse, FetchRequest, FetchResponse, FetchTopicData,
-    FetchTopicResponse, MetadataRequest, MetadataResponse, PartitionMetadata,
-    PartitionProduceData, PartitionProduceResponse, ProduceRequest, ProduceResponse,
-    TopicMetadata, TopicProduceData, TopicProduceResponse,
+    ApiVersionSupport, ApiVersionsRequest, ApiVersionsResponse, BrokerMetadata, FetchPartitionData,
+    FetchPartitionResponse, FetchRequest, FetchResponse, FetchTopicData, FetchTopicResponse,
+    MetadataRequest, MetadataResponse, PartitionMetadata, PartitionProduceData,
+    PartitionProduceResponse, ProduceRequest, ProduceResponse, TopicMetadata, TopicProduceData,
+    TopicProduceResponse,
 };

@@ -4,7 +4,9 @@ use bytes::{Buf, BufMut, Bytes};
 
 use crate::error::ProtocolError;
 use crate::header::ErrorCode;
-use crate::primitives::{read_array, read_bytes, read_string, write_array, write_bytes, write_string};
+use crate::primitives::{
+    read_array, read_bytes, read_string, write_array, write_bytes, write_string,
+};
 
 /// Partition target in a FetchRequest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,14 +439,12 @@ mod tests {
             req.encode(v, &mut buf);
 
             let mut cursor = buf.freeze();
-            let decoded = FetchRequest::decode(v, &mut cursor).expect("Decode fetch request failed");
+            let decoded =
+                FetchRequest::decode(v, &mut cursor).expect("Decode fetch request failed");
             assert_eq!(decoded.topics.len(), 1);
             assert_eq!(decoded.topics[0].name, "sensors");
             assert_eq!(decoded.topics[0].partitions[0].fetch_offset, 42);
-            assert_eq!(
-                decoded.topics[0].partitions[0].partition_max_bytes,
-                65536
-            );
+            assert_eq!(decoded.topics[0].partitions[0].partition_max_bytes, 65536);
         }
     }
 
@@ -463,7 +463,8 @@ mod tests {
             resp.encode(v, &mut buf);
 
             let mut cursor = buf.freeze();
-            let decoded = FetchResponse::decode(v, &mut cursor).expect("Decode fetch response failed");
+            let decoded =
+                FetchResponse::decode(v, &mut cursor).expect("Decode fetch response failed");
             assert_eq!(decoded.responses.len(), 1);
             assert_eq!(decoded.responses[0].name, "sensors");
             assert_eq!(decoded.responses[0].partitions[0].high_watermark, 100);
