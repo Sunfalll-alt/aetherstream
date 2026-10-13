@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use bytes::{Bytes, BytesMut};
 use tracing::{debug, info};
 
 use crate::error::StorageError;
@@ -177,6 +178,44 @@ impl PartitionLog {
         active.append(record)
     }
 
+    /// Appends a batch of records in vectorized writes, automatically rolling segments as needed.
+    pub fn append_batch(&mut self, records: &mut [Record]) -> Result<Vec<AppendResult>, StorageError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut results = Vec::with_capacity(records.len());
+        let mut start_idx = 0;
+
+        while start_idx < records.len() {
+            let active_size = self.segments.get(&self.active_base_offset).unwrap().current_size();
+            let available_space = self.config.max_segment_bytes.saturating_sub(active_size);
+
+            let mut chunk_bytes = 0usize;
+            let mut end_idx = start_idx;
+
+            while end_idx < records.len() {
+                let rec_size = records[end_idx].encoded_size();
+                if end_idx > start_idx && (chunk_bytes as u64 + rec_size as u64 > available_space) {
+                    break;
+                }
+                chunk_bytes += rec_size;
+                end_idx += 1;
+            }
+
+            if active_size > 0 && (active_size + chunk_bytes as u64 > self.config.max_segment_bytes) {
+                self.roll()?;
+            }
+
+            let active = self.segments.get_mut(&self.active_base_offset).unwrap();
+            let chunk_results = active.append_batch(&mut records[start_idx..end_idx])?;
+            results.extend(chunk_results);
+            start_idx = end_idx;
+        }
+
+        Ok(results)
+    }
+
     /// Rolls the active segment: flushes and trims the current active segment,
     /// then instantiates a new active segment at `next_offset`.
     pub fn roll(&mut self) -> Result<(), StorageError> {
@@ -298,6 +337,145 @@ impl PartitionLog {
         }
 
         Ok(records)
+    }
+
+    /// Reads raw contiguous serialized record bytes directly from segment files
+    /// starting at `start_offset` up to `max_bytes` without deserializing and re-encoding.
+    ///
+    /// Provides zero-copy page cache slicing for line-rate Fetch transmission.
+    pub fn read_raw_records_from(
+        &self,
+        start_offset: u64,
+        max_bytes: usize,
+    ) -> Result<(Bytes, u64), StorageError> {
+        let log_start = self.log_start_offset();
+        let log_end = self.log_end_offset();
+
+        if start_offset < log_start {
+            return Err(StorageError::PartitionOffsetOutOfBounds {
+                requested: start_offset,
+                start_offset: log_start,
+                end_offset: log_end,
+            });
+        }
+
+        if start_offset >= log_end || max_bytes == 0 {
+            return Ok((Bytes::new(), start_offset));
+        }
+
+        let mut curr_offset = start_offset;
+        let mut accumulated: Option<BytesMut> = None;
+        let mut first_slice: Option<Bytes> = None;
+
+        while curr_offset < log_end {
+            let already_read = accumulated
+                .as_ref()
+                .map(|a| a.len())
+                .unwrap_or_else(|| first_slice.as_ref().map(|s| s.len()).unwrap_or(0));
+
+            if already_read >= max_bytes {
+                break;
+            }
+
+            let segment = match self.segments.range(..=curr_offset).next_back() {
+                Some((_, seg)) => seg,
+                None => break,
+            };
+
+            if curr_offset >= segment.next_offset() {
+                match self.segments.range((curr_offset + 1)..).next() {
+                    Some((&next_base, _)) => {
+                        curr_offset = next_base;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+
+            // Find starting physical position in segment via mmap sparse index
+            let start_phys = segment.nearest_physical_position(curr_offset)?;
+            if start_phys >= segment.current_size() {
+                break;
+            }
+
+            let remaining_budget = max_bytes.saturating_sub(already_read);
+            let raw_slice = segment.read_raw_slice(start_phys, remaining_budget)?;
+            if raw_slice.is_empty() {
+                break;
+            }
+
+            // Frame-alignment scan: ensure we only return complete record frames
+            let mut valid_end = 0;
+            let mut last_rec_offset = curr_offset;
+            while valid_end + 4 <= raw_slice.len() {
+                let frame_len = u32::from_be_bytes(raw_slice[valid_end..valid_end + 4].try_into().unwrap()) as usize;
+                let total_rec_len = 4 + frame_len;
+                if valid_end + total_rec_len <= raw_slice.len() {
+                    if valid_end + 18 <= raw_slice.len() {
+                        let rec_off = u64::from_be_bytes(
+                            raw_slice[valid_end + 10..valid_end + 18].try_into().unwrap(),
+                        );
+                        last_rec_offset = rec_off + 1;
+                    }
+                    valid_end += total_rec_len;
+                } else {
+                    break;
+                }
+            }
+
+            let chunk = if valid_end == 0 && already_read == 0 {
+                // Budget was smaller than the first record; read the full single record so consumer makes progress
+                let frame_len = u32::from_be_bytes(raw_slice[0..4].try_into().unwrap()) as usize;
+                let total_rec_len = 4 + frame_len;
+                let full_first = segment.read_raw_slice(start_phys, total_rec_len)?;
+                if full_first.len() >= 18 {
+                    let rec_off = u64::from_be_bytes(full_first[10..18].try_into().unwrap());
+                    last_rec_offset = rec_off + 1;
+                }
+                full_first
+            } else if valid_end > 0 {
+                raw_slice.slice(..valid_end)
+            } else {
+                break;
+            };
+
+            if chunk.is_empty() {
+                break;
+            }
+
+            let chunk_len = chunk.len();
+            curr_offset = last_rec_offset;
+
+            match (first_slice.take(), &mut accumulated) {
+                (None, None) => {
+                    first_slice = Some(chunk);
+                }
+                (Some(first), None) => {
+                    let mut mut_buf = BytesMut::with_capacity(first.len() + chunk.len());
+                    mut_buf.extend_from_slice(&first);
+                    mut_buf.extend_from_slice(&chunk);
+                    accumulated = Some(mut_buf);
+                }
+                (None, Some(acc)) => {
+                    acc.extend_from_slice(&chunk);
+                }
+                (Some(_), Some(_)) => unreachable!(),
+            }
+
+            if start_phys + (chunk_len as u64) < segment.current_size() {
+                break;
+            }
+        }
+
+        let result_bytes = if let Some(acc) = accumulated {
+            acc.freeze()
+        } else if let Some(first) = first_slice {
+            first
+        } else {
+            Bytes::new()
+        };
+
+        Ok((result_bytes, curr_offset))
     }
 
     /// Evaluates and enforces configured time-based and size-based retention policies.
@@ -704,5 +882,69 @@ mod tests {
         // Only active segment must remain!
         assert_eq!(partition.segments_count(), 1);
         assert_eq!(partition.log_end_offset(), 20);
+    }
+
+    #[test]
+    fn test_partition_append_batch_and_zero_copy_read_raw() {
+        let dir = tempdir().unwrap();
+        let config = PartitionConfig {
+            max_segment_bytes: 200,
+            sync_on_append: false,
+            max_index_bytes: 1024,
+            index_interval_bytes: 50,
+            retention_bytes: None,
+            retention_ms: None,
+        };
+
+        let mut partition = PartitionLog::open(dir.path(), "events", 0, config).unwrap();
+
+        let mut batch: Vec<Record> = (0..15)
+            .map(|i| {
+                Record::new(
+                    Some(Bytes::from(format!("key-{}", i))),
+                    Some(Bytes::from(format!("val-{}", i))),
+                )
+            })
+            .collect();
+
+        let results = partition.append_batch(&mut batch).unwrap();
+        assert_eq!(results.len(), 15);
+        assert_eq!(partition.log_end_offset(), 15);
+        // Verify rolling occurred
+        assert!(partition.segments_count() > 1);
+
+        // Read all records via zero-copy raw read
+        let (raw_bytes, next_offset) = partition.read_raw_records_from(0, 10000).unwrap();
+        assert!(!raw_bytes.is_empty());
+        assert_eq!(next_offset, 15);
+
+        // Verify the raw bytes decode into the exact 15 records
+        let mut slice: &[u8] = &raw_bytes;
+        let mut decoded_records = Vec::new();
+        while !slice.is_empty() {
+            let (rec, consumed) = Record::decode_from_slice(slice).unwrap();
+            decoded_records.push(rec);
+            slice = &slice[consumed..];
+        }
+
+        assert_eq!(decoded_records.len(), 15);
+        for (i, rec) in decoded_records.iter().enumerate() {
+            assert_eq!(rec.offset, i as u64);
+            assert_eq!(rec.key.as_ref().unwrap(), &Bytes::from(format!("key-{}", i)));
+            assert_eq!(rec.value.as_ref().unwrap(), &Bytes::from(format!("val-{}", i)));
+        }
+
+        // Test boundary-aligned partial budget
+        let (part_bytes, _) = partition.read_raw_records_from(5, 80).unwrap();
+        assert!(!part_bytes.is_empty());
+        let mut part_slice: &[u8] = &part_bytes;
+        let mut part_records = Vec::new();
+        while !part_slice.is_empty() {
+            let (rec, consumed) = Record::decode_from_slice(part_slice).unwrap();
+            part_records.push(rec);
+            part_slice = &part_slice[consumed..];
+        }
+        assert!(!part_records.is_empty());
+        assert_eq!(part_records[0].offset, 5);
     }
 }

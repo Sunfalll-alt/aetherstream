@@ -45,5 +45,6 @@ aether-storage = { path = "crates/aether-storage" }
 aether-protocol = { path = "crates/aether-protocol" }
 aether-server = { path = "crates/aether-server" }
 
-# Testing utilities
+# Testing & Benchmarking utilities
 tempfile = "3.17"
+criterion = { version = "0.5", features = ["async_tokio"] }

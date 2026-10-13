@@ -369,6 +369,77 @@ impl Segment {
         })
     }
 
+    /// Appends a contiguous batch of records in a single vectorized disk write.
+    ///
+    /// Pre-computes offsets, serializes all records into a single contiguous buffer,
+    /// records sparse index entries, and issues a single atomic `write_all_at` disk write
+    /// to minimize kernel syscall transitions.
+    pub fn append_batch(&mut self, records: &mut [Record]) -> Result<Vec<AppendResult>, StorageError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut total_batch_bytes = 0usize;
+        for rec in records.iter() {
+            total_batch_bytes += rec.encoded_size();
+        }
+
+        if self.current_size > 0 && self.current_size + total_batch_bytes as u64 > self.config.max_segment_bytes {
+            return Err(StorageError::SegmentFull {
+                current_bytes: self.current_size,
+                record_bytes: total_batch_bytes,
+                max_bytes: self.config.max_segment_bytes,
+            });
+        }
+
+        let mut batch_buf = bytes::BytesMut::with_capacity(total_batch_bytes);
+        let mut results = Vec::with_capacity(records.len());
+        let mut next_offset = self.next_offset;
+        let mut current_pos = self.current_size;
+        let mut bytes_since_index = self.bytes_since_last_index;
+
+        for record in records.iter_mut() {
+            record.offset = next_offset;
+            let start_len = batch_buf.len();
+            record.encode_into(&mut batch_buf);
+            let rec_len = batch_buf.len() - start_len;
+
+            let should_index = self.index.entries_count() == 0
+                || bytes_since_index >= self.config.index_interval_bytes;
+
+            if should_index {
+                let rel_offset = (record.offset - self.base_offset) as u32;
+                self.index.append(rel_offset, current_pos as u32)?;
+                bytes_since_index = 0;
+            }
+
+            bytes_since_index += rec_len;
+
+            results.push(AppendResult {
+                offset: record.offset,
+                physical_position: current_pos,
+                bytes_written: rec_len,
+            });
+
+            current_pos += rec_len as u64;
+            next_offset += 1;
+        }
+
+        // Single vectorized atomic disk write
+        self.file.write_all_at(&batch_buf, self.current_size)?;
+
+        if self.config.sync_on_append {
+            self.file.sync_data()?;
+            self.index.flush()?;
+        }
+
+        self.current_size = current_pos;
+        self.next_offset = next_offset;
+        self.bytes_since_last_index = bytes_since_index;
+
+        Ok(results)
+    }
+
     /// Reads a record starting from a given physical byte offset.
     ///
     /// Returns `Ok(None)` if `physical_offset` is at or beyond the current log end.
@@ -793,6 +864,56 @@ mod tests {
         match err {
             StorageError::SegmentFull { .. } => {}
             other => panic!("Expected SegmentFull, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_segment_append_batch_vectorized() {
+        let dir = tempdir().unwrap();
+        let config = SegmentConfig {
+            max_segment_bytes: 1024 * 1024,
+            sync_on_append: false,
+            max_index_bytes: 1024,
+            index_interval_bytes: 50,
+        };
+
+        let mut segment = Segment::create(dir.path(), 0, config.clone()).unwrap();
+        let mut batch: Vec<Record> = (0..10)
+            .map(|i| {
+                Record::new(
+                    Some(Bytes::from(format!("k-{}", i))),
+                    Some(Bytes::from(format!("v-{}", i))),
+                )
+            })
+            .collect();
+
+        let results = segment.append_batch(&mut batch).unwrap();
+        assert_eq!(results.len(), 10);
+        assert_eq!(segment.next_offset(), 10);
+
+        for (i, res) in results.iter().enumerate() {
+            assert_eq!(res.offset, i as u64);
+        }
+
+        // Verify each record can be read back individually via index
+        for i in 0..10 {
+            let (rec, _) = segment.read_record_by_offset(i as u64).unwrap().unwrap();
+            assert_eq!(rec.offset, i as u64);
+            assert_eq!(rec.key.unwrap(), Bytes::from(format!("k-{}", i)));
+            assert_eq!(rec.value.unwrap(), Bytes::from(format!("v-{}", i)));
+        }
+
+        // Re-open and verify persistence and continuation
+        {
+            let mut reopened = Segment::open(dir.path(), 0, config).unwrap();
+            assert_eq!(reopened.next_offset(), 10);
+            let mut more = vec![Record::new(
+                Some(Bytes::from_static(b"k-10")),
+                Some(Bytes::from_static(b"v-10")),
+            )];
+            let res2 = reopened.append_batch(&mut more).unwrap();
+            assert_eq!(res2[0].offset, 10);
+            assert_eq!(reopened.next_offset(), 11);
         }
     }
 }

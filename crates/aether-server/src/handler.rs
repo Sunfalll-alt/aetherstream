@@ -171,32 +171,22 @@ fn handle_produce(
             let part_res = match state.get_or_create_partition(&topic_data.name, part_id as u32) {
                 Ok(part_arc) => {
                     if let Some(records_payload) = part_data.records {
-                        let records = extract_records(records_payload);
+                        let mut records = extract_records(records_payload);
                         let mut part_log = part_arc.write();
-                        let mut first_offset = None;
 
-                        let mut append_err = None;
-                        for mut record in records {
-                            match part_log.append(&mut record) {
-                                Ok(res) => {
-                                    if first_offset.is_none() {
-                                        first_offset = Some(res.offset);
-                                    }
-                                }
-                                Err(e) => {
-                                    append_err = Some(e);
-                                    break;
-                                }
+                        match part_log.append_batch(&mut records) {
+                            Ok(results) => {
+                                let base_offset = results
+                                    .first()
+                                    .map(|r| r.offset)
+                                    .unwrap_or_else(|| part_log.log_end_offset());
+                                let start_offset = part_log.log_start_offset();
+                                PartitionProduceResponse::success(part_id, base_offset, start_offset)
                             }
-                        }
-
-                        if let Some(err) = append_err {
-                            warn!("Append error on {}-{}: {}", topic_data.name, part_id, err);
-                            PartitionProduceResponse::error(part_id, ErrorCode::CorruptMessage)
-                        } else {
-                            let base_offset = first_offset.unwrap_or_else(|| part_log.log_end_offset());
-                            let start_offset = part_log.log_start_offset();
-                            PartitionProduceResponse::success(part_id, base_offset, start_offset)
+                            Err(err) => {
+                                warn!("Append error on {}-{}: {}", topic_data.name, part_id, err);
+                                PartitionProduceResponse::error(part_id, ErrorCode::CorruptMessage)
+                            }
                         }
                     } else {
                         // Empty records payload
@@ -272,20 +262,16 @@ fn handle_fetch(
                         // Beyond tail: return empty records
                         FetchPartitionResponse::success(part_id, high_watermark, log_start_offset, None)
                     } else {
-                        match part_log.read_records_from(fetch_offset, part_target.partition_max_bytes as usize) {
-                            Ok(records) => {
-                                if records.is_empty() {
+                        match part_log.read_raw_records_from(fetch_offset, part_target.partition_max_bytes as usize) {
+                            Ok((raw_bytes, _next_offset)) => {
+                                if raw_bytes.is_empty() {
                                     FetchPartitionResponse::success(part_id, high_watermark, log_start_offset, None)
                                 } else {
-                                    let mut records_buf = BytesMut::new();
-                                    for rec in &records {
-                                        rec.encode_into(&mut records_buf);
-                                    }
                                     FetchPartitionResponse::success(
                                         part_id,
                                         high_watermark,
                                         log_start_offset,
-                                        Some(records_buf.freeze()),
+                                        Some(raw_bytes),
                                     )
                                 }
                             }

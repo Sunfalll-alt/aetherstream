@@ -21,3 +21,8 @@ futures-util = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "broker_bench"
+harness = false
